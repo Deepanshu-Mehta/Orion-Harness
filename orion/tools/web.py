@@ -24,6 +24,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from html.parser import HTMLParser
 
 from orion import provider
@@ -123,17 +124,34 @@ def html_to_text(html: str) -> str:
     return parser.text()
 
 
+def _decode_body(body: bytes, encoding: str) -> tuple[bytes, bool]:
+    """Undo gzip/deflate; the size cap applies to the decompressed bytes too."""
+    encoding = encoding.strip().lower()
+    if encoding in ("", "identity"):
+        return body[:FETCH_MAX_BYTES], len(body) > FETCH_MAX_BYTES
+    if encoding not in ("gzip", "x-gzip", "deflate"):
+        raise ToolError(f"server sent unsupported Content-Encoding {encoding!r}; try another URL")
+    inflater = zlib.decompressobj(wbits=zlib.MAX_WBITS | 32)  # +32: auto-detect gzip/zlib
+    try:
+        data = inflater.decompress(body, FETCH_MAX_BYTES)
+    except zlib.error as e:
+        raise ToolError(f"could not decompress the response: {e}") from None
+    return data, bool(inflater.unconsumed_tail) or len(body) > FETCH_MAX_BYTES
+
+
 def _fetch(url: str) -> tuple[str, str, bytes, bool]:
     """GET url following checked redirects; return (final url, content type, body, cut)."""
     opener = urllib.request.build_opener(_NoRedirect)
+    # Some servers compress even when not asked, so ask for what we can decode.
+    headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"}
     for _ in range(MAX_REDIRECTS + 1):
         check_public_url(url)
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(url, headers=headers)
         try:
             with opener.open(req, timeout=FETCH_TIMEOUT) as resp:
-                body = resp.read(FETCH_MAX_BYTES + 1)
-                return (url, resp.headers.get("Content-Type", ""), body[:FETCH_MAX_BYTES],
-                        len(body) > FETCH_MAX_BYTES)
+                raw = resp.read(FETCH_MAX_BYTES + 1)
+                body, cut = _decode_body(raw, resp.headers.get("Content-Encoding", ""))
+                return url, resp.headers.get("Content-Type", ""), body, cut
         except urllib.error.HTTPError as e:
             location = e.headers.get("Location")
             if e.code in (301, 302, 303, 307, 308) and location:

@@ -225,7 +225,7 @@ class WebToolTests(unittest.TestCase):
 
     def test_fetch_wraps_untrusted_html(self):
         class Resp:
-            headers = {"Content-Type": "text/html; charset=utf-8"}
+            headers = {"Content-Type": "text/html; charset=utf-8", "Content-Encoding": ""}
 
             def read(self, n):
                 return (b"<html><head><title>T</title><script>evil()</script></head><body>"
@@ -248,6 +248,26 @@ class WebToolTests(unittest.TestCase):
         self.assertIn("# T", out)
         self.assertNotIn("evil", out)
         self.assertNotIn("menu", out)
+
+    def test_fetch_decompresses_gzip(self):
+        import gzip
+
+        class Resp:
+            headers = {"Content-Type": "text/plain", "Content-Encoding": "gzip"}
+
+            def read(self, n):
+                return gzip.compress(b"plain text body")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("socket.getaddrinfo", _fake_dns("93.184.215.14")), \
+                mock.patch("urllib.request.OpenerDirector.open", return_value=Resp()):
+            out = self.tools["web_fetch"].run(url="https://example.com/")
+        self.assertIn("plain text body", out)
 
     def test_search_backend_selection(self):
         with mock.patch.dict(os.environ, {"BRAVE_API_KEY": "k"}):
