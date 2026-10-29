@@ -3,7 +3,8 @@
 Concept: everything outside this module speaks a neutral message format
 (user / assistant / tool messages, ToolCalls with ids). This module
 translates that format to Gemini's wire format and back, and owns the HTTP
-call with its retry policy.
+call with its retry policy. Day 2 adds `web_search`, a grounded call used
+by the opt-in web tool, so the vendor stays confined to this file.
 
 Design rules:
 - Standard library only; the API key travels in a header, never in a URL,
@@ -59,6 +60,29 @@ def complete(model: str, system: str, messages: list, tools: list) -> dict:
     if tools:
         body["tools"] = [{"functionDeclarations": [t["schema"] for t in tools]}]
     return _parse(_post(f"{API_ROOT}/{model}:generateContent", body))
+
+
+def web_search(query: str, model: str | None = None) -> dict:
+    """Answer `query` with a Google-Search-grounded call.
+
+    Returns {"text": str, "sources": [{"title", "url"}]}. This is a separate
+    generateContent call with the google_search tool, not part of the loop.
+    """
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": query}]}],
+        "tools": [{"google_search": {}}],
+    }
+    url = f"{API_ROOT}/{model or default_model()}:generateContent"
+    return _parse_grounding(_post(url, body))
+
+
+def _parse_grounding(response: dict) -> dict:
+    """Extract answer text and web sources from a grounded response."""
+    text = _parse(response)["text"]
+    meta = response["candidates"][0].get("groundingMetadata") or {}
+    sources = [{"title": c["web"].get("title", ""), "url": c["web"].get("uri", "")}
+               for c in meta.get("groundingChunks") or [] if "web" in c]
+    return {"text": text, "sources": sources}
 
 
 def _to_wire(messages: list) -> list:
