@@ -1,0 +1,3 @@
+# Orion-Harness
+
+Orion is a minimal coding-agent harness written in pure Python (standard library only, Python 3.10+), built in five layers: the loop, tools, context, durability, and orchestration. Day 1 provides the model client (`orion/provider.py`, the only file that knows the vendor) and the agent loop (`orion/loop.py`). Run the offline tests with `python3 -m unittest discover -s tests -v` (no API key or network needed), and the live demo with `ORION_API_KEY=... python3 demos/day1_dice.py --trace` (or set `GEMINI_API_KEY`; pass a task as an argument to replace the default "Roll 3 dice and tell me whether the total beats 10").
