@@ -10,8 +10,6 @@ ORION_TEST_SSH=host:/abs/path. Skips name their reason.
 
 import os
 import shutil
-import signal
-import socket
 import tempfile
 import time
 import unittest

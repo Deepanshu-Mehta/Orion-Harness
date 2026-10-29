@@ -72,7 +72,10 @@ def scrubbed_env(extra: dict | None = None) -> dict:
 def _glob_regex(pattern: str) -> re.Pattern:
     out, i = [], 0
     while i < len(pattern):
-        if pattern.startswith("**/", i):
+        if pattern == "/**" or pattern.endswith("/**") and i == len(pattern) - 3:
+            out.append("(?:/.*)?")  # `dir/**` also matches `dir` itself
+            i += 3
+        elif pattern.startswith("**/", i):
             out.append("(?:.*/)?")
             i += 3
         elif pattern.startswith("**", i):
