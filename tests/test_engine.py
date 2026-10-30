@@ -103,6 +103,18 @@ class EscalationTests(Base):
         self.assertTrue(e.verify_pending)
         self.assertIsNone(e.meter.anchor)
 
+    def test_summarizer_sees_the_task_on_every_compaction(self):
+        seen = []
+        e = self.engine(summarize=lambda s, m: seen.append(m[0]["text"]) or summary_reply())
+        first = tape(4)
+        first[0]["text"] = "Build it. Constraint: standard library only."
+        folded = e.compact(first, force=True)
+        e.compact(folded + tape(4)[1:], force=True)
+        self.assertEqual(len(seen), 2)
+        for request in seen:
+            self.assertIn("[User]: Build it. Constraint: standard library only.", request)
+        self.assertEqual(folded[1]["compaction"]["user_messages"], [])  # pinned, not duplicated
+
     def test_summary_rebuilds_the_prompt(self):
         e = self.engine(summarize=lambda s, m: summary_reply())
         e.before_turn(tape(4))

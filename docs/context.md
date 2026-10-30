@@ -74,7 +74,8 @@ head and cheap prune step:
   output is cleared before any money is spent.
 - **Different**: a `tool` message is never a cut point, so the tape needs no
   repair step: the illegal state cannot be constructed. The summary runs on
-  unpruned output. Summary word and transcript budgets scale with the window.
+  unpruned output and always sees the pinned first message, which is the task.
+  Summary word and transcript budgets scale with the window.
 
 ## Instructions, memory and skills
 
@@ -105,6 +106,7 @@ enough it raises `ContextBudgetError` before any model call.
 - **The first user message is pinned.** A huge first message cannot be folded;
   a persistent overflow reports its size.
 - **Thought signature rules are not fully documented.** The tail is kept
-  verbatim, signatures included, but the API's exact rules for trimmed history
-  are not published.
+  verbatim, signatures included. Live runs on `gemini-3-flash-preview` accepted
+  compacted tapes, but the API's exact rules for trimmed history are not
+  published.
 - **Prune discards detail.** A cleared output must be re-run if needed again.

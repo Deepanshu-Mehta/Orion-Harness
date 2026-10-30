@@ -156,7 +156,9 @@ class ContextEngine:
     def _make_summary(self, messages: list, cut: int, focus: str | None) -> str | None:
         """Return validated, redacted summary text, or None if the call failed."""
         previous = (compact.previous_details(messages) or {}).get("summary")
-        span = messages[compact.head_len(messages):cut]
+        # The pinned first message is not folded, but it is the task: without it the
+        # summarizer cannot state the Goal or quote the Constraints.
+        span = messages[:1] + messages[compact.head_len(messages):cut]
         system, request = summary.build_request(
             span, previous, focus, self.tools, summary.transcript_budget(self.window),
             summary.word_budget(self.threshold))
