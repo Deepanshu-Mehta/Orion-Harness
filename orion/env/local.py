@@ -92,6 +92,25 @@ class LocalEnv(Environment):
         """Whether the path is a directory inside the workspace."""
         return os.path.isdir(self._host_path(path))
 
+    def list_dir(self, path: str) -> list[str]:
+        """Names directly inside a workspace directory, sorted."""
+        host = self._host_path(path)
+        return sorted(os.listdir(host)) if os.path.isdir(host) else []
+
+    def ancestor_dirs(self) -> list[str]:
+        """Parents from the nearest `.git` holder down; [] if the root is the repo."""
+        if os.path.exists(os.path.join(self.host_root, ".git")):
+            return []
+        home = os.path.realpath(os.path.expanduser("~"))
+        chain, current = [], os.path.dirname(self.host_root)
+        # Never climb to or past home: a dotfiles repo there is not this project.
+        while current not in (home, os.path.dirname(current)):
+            chain.append(current)
+            if os.path.exists(os.path.join(current, ".git")):
+                return chain[::-1]
+            current = os.path.dirname(current)
+        return []
+
     def list_files(self, limit: int) -> list[str]:
         """Relative file paths under the root, ignore set applied, sorted."""
         found = []

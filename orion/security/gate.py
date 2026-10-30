@@ -68,8 +68,12 @@ def _read_only_exec(env) -> bool:
     return env.isolation != "none" and getattr(env, "writable", True) is False
 
 
-def toolset_for(mode: str, env, allow_web: bool = False, policy: Policy | None = None) -> dict:
-    """The tools the model is offered in `mode`; forbidden kinds are hidden."""
+def toolset_for(mode: str, env, allow_web: bool = False, policy: Policy | None = None,
+                extra_tools: dict | None = None) -> dict:
+    """The tools the model is offered in `mode`; forbidden kinds are hidden.
+
+    `extra_tools` merge before the mode filter, so they obey it too.
+    """
     mode = normalize_mode(mode)
     policy = policy or Policy()
     home = rules.default_home()
@@ -80,6 +84,7 @@ def toolset_for(mode: str, env, allow_web: bool = False, policy: Policy | None =
     tools = core_tools(env, secret)
     if allow_web:
         tools.update(web_tools())
+    tools.update(extra_tools or {})
     if mode == "read-only":
         tools = {n: t for n, t in tools.items()
                  if t.kind in ("read", "network") or (t.kind == "exec" and _read_only_exec(env))}

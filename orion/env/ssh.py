@@ -86,6 +86,12 @@ class SSHEnv(Environment):
         """Whether the remote path is a directory."""
         return self._ssh(f"test -d {shlex.quote(self.resolve(path))}").exit_code == 0
 
+    def list_dir(self, path: str) -> list[str]:
+        """Names directly inside a remote directory, sorted."""
+        target = shlex.quote(self.resolve(path))
+        out = self._ssh(f"test -d {target} && ls -1A -- {target}").output
+        return sorted(line for line in out.splitlines() if line)
+
     def _prunes(self) -> str:
         names = " -o ".join(f"-name {shlex.quote(d)}" for d in sorted(IGNORE_DIRS))
         return f"\\( {names} \\) -prune -o"

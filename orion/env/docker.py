@@ -7,6 +7,8 @@ workspace is bind-mounted at /workspace, so file tools use the local mount
 
 Design rules:
 - One container per environment, started on first use, removed on close.
+- `.orion/` is mounted read-only over the workspace: memory, skills and
+  policy reload next session, so a command must not be able to rewrite them.
 - The container runs as the invoking uid:gid, so files it writes in the
   workspace stay owned by the user.
 - Killing the local `docker exec` client does not kill the process inside
@@ -65,13 +67,16 @@ class DockerEnv(LocalEnv):
     def _ensure(self) -> str:
         if self.container is None:
             name = f"orion-{uuid.uuid4().hex[:10]}"
+            os.makedirs(os.path.join(self.host_root, ".orion"), exist_ok=True)
             args = ["run", "-d", "--name", name]
             if not self.exec_network:
                 args += ["--network", "none"]
             args += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                      "--pids-limit", "512", "--memory", "2g",
                      "--user", f"{os.getuid()}:{os.getgid()}",
-                     "-v", f"{self.host_root}:/workspace", "-w", "/workspace",
+                     "-v", f"{self.host_root}:/workspace",
+                     "-v", f"{self.host_root}/.orion:/workspace/.orion:ro",
+                     "-w", "/workspace",
                      self.image, "sleep", "infinity"]
             self._docker(*args, timeout=600)  # may pull the image
             self.container = name

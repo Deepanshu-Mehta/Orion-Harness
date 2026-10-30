@@ -264,6 +264,21 @@ class Environment(ABC):
         """Whether the path is a directory (inside the workspace)."""
 
     @abstractmethod
+    def list_dir(self, path: str) -> list[str]:
+        """Names directly inside a workspace directory, sorted; [] if it does not exist.
+
+        Unlike list_files this applies no ignore set, so the harness can
+        read its own `.orion/` directory.
+        """
+
+    def ancestor_dirs(self) -> list[str]:
+        """Host directories from the git root down to just above the workspace root.
+
+        Empty by default: environments without a host view see only the root.
+        """
+        return []
+
+    @abstractmethod
     def list_files(self, limit: int) -> list[str]:
         """Relative file paths, ignore set applied, sorted, at most `limit`."""
 
