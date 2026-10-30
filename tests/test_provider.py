@@ -102,6 +102,91 @@ class ParseTests(unittest.TestCase):
         self.assertIn("SAFETY", str(ctx.exception))
 
 
+class DeepSeekTests(unittest.TestCase):
+    TAPE = [
+        {"role": "user", "text": "first"},
+        {"role": "user", "text": "compaction summary"},
+        {"role": "assistant", "text": "", "text_signature": "reasoning one", "tool_calls": [
+            {"id": "a", "name": "roll", "args": {"n": 1}, "signature": None}]},
+        tool_msg("a", "one"),
+        {"role": "assistant", "text": "done", "text_signature": "reasoning two", "tool_calls": []},
+    ]
+
+    def test_wire_shape(self):
+        wire = provider._to_deepseek("sys", self.TAPE)
+        self.assertEqual(wire[0], {"role": "system", "content": "sys"})
+        self.assertEqual(wire[1], {"role": "user", "content": "first\n\ncompaction summary"})
+        self.assertEqual(wire[2]["tool_calls"], [{"id": "a", "type": "function", "function": {
+            "name": "roll", "arguments": '{"n": 1}'}}])
+        self.assertEqual(wire[3], {"role": "tool", "tool_call_id": "a", "content": "one"})
+        self.assertNotIn("tool_calls", wire[4])
+
+    def test_reasoning_is_echoed_on_every_turn(self):
+        wire = provider._to_deepseek("sys", self.TAPE)
+        self.assertEqual([m.get("reasoning_content") for m in wire if m["role"] == "assistant"],
+                         ["reasoning one", "reasoning two"])
+
+    def response(self, message, finish="stop", usage=None):
+        return {"choices": [{"message": message, "finish_reason": finish}], "usage": usage or {}}
+
+    def test_parse(self):
+        out = provider._parse_deepseek(self.response(
+            {"content": "hi", "reasoning_content": "because", "tool_calls": [
+                {"id": "x", "function": {"name": "roll", "arguments": '{"n": 2}'}}]},
+            "tool_calls", {"prompt_tokens": 100, "completion_tokens": 30,
+                           "prompt_cache_hit_tokens": 60,
+                           "completion_tokens_details": {"reasoning_tokens": 20}}))
+        self.assertEqual(out["tool_calls"], [{"id": "x", "name": "roll", "args": {"n": 2},
+                                              "signature": None}])
+        self.assertEqual(out["text_signature"], "because")
+        self.assertEqual(out["finish"], "TOOL_CALLS")
+        self.assertEqual(out["usage"], {"input": 100, "output": 10, "thoughts": 20, "cached": 60})
+
+    def test_finish_maps_to_the_neutral_names(self):
+        self.assertEqual(provider._parse_deepseek(self.response({}, "length"))["finish"], "MAX_TOKENS")
+        self.assertEqual(provider._parse_deepseek(self.response({}, "stop"))["finish"], "STOP")
+
+    def test_bad_arguments_become_a_rejectable_argument(self):
+        out = provider._parse_deepseek(self.response({"tool_calls": [
+            {"id": "x", "function": {"name": "roll", "arguments": "{broken"}}]}))
+        self.assertEqual(out["tool_calls"][0]["args"], {"invalid_json_arguments": "{broken"})
+
+    def test_no_choices_raises(self):
+        with self.assertRaises(RuntimeError):
+            provider._parse_deepseek({"choices": []})
+
+    def test_limits_need_no_network(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch("urllib.request.urlopen", side_effect=AssertionError("network")):
+            self.assertEqual(provider.context_window("deepseek-flash"), 1_000_000)
+
+    def test_keys_only_reach_their_own_vendor(self):
+        keys = {"GEMINI_API_KEY": "gem-secret", "DEEPSEEK_API_KEY": "ds-secret"}
+        with mock.patch.dict(os.environ, keys, clear=True), \
+                mock.patch("orion.provider._request", return_value={"choices": [{"message": {}}]}) as sent:
+            provider.complete("deepseek-flash", "s", [{"role": "user", "text": "x"}], [])
+        self.assertEqual(sent.call_args.kwargs["headers"]["Authorization"], "Bearer ds-secret")
+        self.assertNotIn("gem-secret", str(sent.call_args))
+        with mock.patch.dict(os.environ, keys, clear=True), \
+                mock.patch("urllib.request.urlopen", side_effect=TimeoutError("t")) as opened, \
+                mock.patch("time.sleep"):
+            with self.assertRaises(RuntimeError):
+                provider.complete("gemini-x", "s", [{"role": "user", "text": "x"}], [])
+        self.assertNotIn("ds-secret", str(opened.call_args[0][0].headers))
+
+    def test_missing_key_names_the_variable(self):
+        with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(RuntimeError) as ctx:
+            provider.complete("deepseek-flash", "s", [], [])
+        self.assertIn("DEEPSEEK_API_KEY", str(ctx.exception))
+
+    def test_web_search_stays_on_gemini(self):
+        with mock.patch.dict(os.environ, {"ORION_MODEL": "deepseek-flash"}, clear=True), \
+                mock.patch("orion.provider._post", return_value={
+                    "candidates": [{"content": {"parts": [{"text": "a"}]}}]}) as post:
+            provider.web_search("q")
+        self.assertIn(provider.GROUNDING_MODEL, post.call_args[0][0])
+
+
 class EnvTests(unittest.TestCase):
     def test_api_key_missing(self):
         with mock.patch.dict(os.environ, {}, clear=True):

@@ -5,7 +5,8 @@ Concept: everything outside this module speaks a neutral message format
 translates that format to Gemini's wire format and back, and owns the HTTP
 call with its retry policy. Day 2 adds `web_search`, a grounded call used
 by the opt-in web tool, so the vendor stays confined to this file. Day 3
-adds `ContextOverflow` and real model limits for the context engine.
+adds `ContextOverflow`, real model limits for the context engine, and a
+second vendor, DeepSeek, chosen by model name (`deepseek-*`).
 
 Design rules:
 - Standard library only; the API key travels in a header, never in a URL,
@@ -15,6 +16,8 @@ Design rules:
   verbatim; Gemini 3 rejects follow-up turns that drop them.
 - Every tool call gets an id, even though Gemini does not need one, because
   the pairing invariant (and any future provider) does.
+- Each vendor builds its own auth header, so a key is only ever sent to the
+  vendor that issued it.
 """
 
 import json
@@ -31,6 +34,10 @@ API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 
 FALLBACK_WINDOW = 200_000
+
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_LIMITS = {"input": 1_000_000, "output": 393_216}
+GROUNDING_MODEL = "gemini-3-flash-preview"  # web_search is Gemini-only
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _OVERFLOW = re.compile(r"(?i)token count.*exceeds|exceeds the maximum number of tokens"
@@ -53,6 +60,18 @@ def api_key() -> str:
     return key
 
 
+def deepseek_key() -> str:
+    """Return the DeepSeek API key from DEEPSEEK_API_KEY."""
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        raise RuntimeError("No DeepSeek API key found: set DEEPSEEK_API_KEY in the environment.")
+    return key
+
+
+def _is_deepseek(model: str) -> bool:
+    return model.startswith("deepseek")
+
+
 def default_model() -> str:
     """Return the model name from ORION_MODEL, else DEFAULT_MODEL."""
     return os.environ.get("ORION_MODEL") or DEFAULT_MODEL
@@ -60,6 +79,8 @@ def default_model() -> str:
 
 def model_limits(model: str) -> dict:
     """Return {"input", "output"} token limits for `model`, cached per model."""
+    if _is_deepseek(model):
+        return dict(DEEPSEEK_LIMITS)  # DeepSeek publishes no limits endpoint
     if model not in _limits_cache:
         info = _request(f"{API_ROOT}/{model}", retries=2)
         _limits_cache[model] = {"input": info["inputTokenLimit"],
@@ -96,6 +117,8 @@ def complete(model: str, system: str, messages: list, tools: list) -> dict:
     `messages` is in the neutral format; `tools` is a list of
     `{"schema": {...}}` dicts (possibly empty).
     """
+    if _is_deepseek(model):
+        return _deepseek_complete(model, system, messages, tools)
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": _to_wire(messages),
@@ -117,7 +140,8 @@ def web_search(query: str, model: str | None = None) -> dict:
         "contents": [{"role": "user", "parts": [{"text": query}]}],
         "tools": [{"google_search": {}}],
     }
-    url = f"{API_ROOT}/{model or default_model()}:generateContent"
+    model = model or default_model()
+    url = f"{API_ROOT}/{GROUNDING_MODEL if _is_deepseek(model) else model}:generateContent"
     return _parse_grounding(_post(url, body))
 
 
@@ -128,6 +152,79 @@ def _parse_grounding(response: dict) -> dict:
     sources = [{"title": c["web"].get("title", ""), "url": c["web"].get("uri", "")}
                for c in meta.get("groundingChunks") or [] if "web" in c]
     return {"text": text, "sources": sources}
+
+
+def _deepseek_complete(model: str, system: str, messages: list, tools: list) -> dict:
+    """One DeepSeek chat completion, returning the same neutral dict as Gemini."""
+    body = {"model": model, "messages": _to_deepseek(system, messages)}
+    if tools:
+        body["tools"] = [{"type": "function", "function": t["schema"]} for t in tools]
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {deepseek_key()}"}
+    data = json.dumps(body).encode("utf-8")
+    return _parse_deepseek(_request(DEEPSEEK_URL, data, headers=headers))
+
+
+def _to_deepseek(system: str, messages: list) -> list:
+    """Convert neutral messages to DeepSeek's OpenAI-style message list."""
+    wire = [{"role": "system", "content": system}]
+    for m in messages:
+        if m["role"] == "user":
+            # Merge neighbours, as _to_wire does: the head and a compaction are adjacent.
+            if wire[-1]["role"] == "user":
+                wire[-1]["content"] += "\n\n" + m["text"]
+            else:
+                wire.append({"role": "user", "content": m["text"]})
+        elif m["role"] == "assistant":
+            msg = {"role": "assistant", "content": m.get("text") or ""}
+            # With tools in the request, DeepSeek returns HTTP 400 unless every earlier
+            # turn's reasoning comes back. It rides in text_signature, the one field
+            # the loop keeps for opaque vendor data that must be echoed.
+            if m.get("text_signature"):
+                msg["reasoning_content"] = m["text_signature"]
+            if m.get("tool_calls"):
+                msg["tool_calls"] = [{"id": c["id"], "type": "function", "function": {
+                    "name": c["name"], "arguments": json.dumps(c["args"])}}
+                    for c in m["tool_calls"]]
+            wire.append(msg)
+        elif m["role"] == "tool":
+            wire.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["text"]})
+        else:
+            raise ValueError(f"unknown message role: {m['role']!r}")
+    return wire
+
+
+def _parse_deepseek(response: dict) -> dict:
+    """Convert a DeepSeek chat completion into the neutral result dict."""
+    choices = response.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"model returned no choices: {str(response)[:300]}")
+    message = choices[0].get("message") or {}
+    tool_calls = []
+    for c in message.get("tool_calls") or []:
+        raw = c["function"].get("arguments") or "{}"
+        try:
+            args = json.loads(raw)
+        except json.JSONDecodeError:
+            # An argument name no tool accepts: the tool's validator answers with
+            # an ERROR the model can act on, so the call is still answered once.
+            args = {"invalid_json_arguments": raw}
+        tool_calls.append({"id": c.get("id") or f"call_{uuid.uuid4().hex[:12]}",
+                           "name": c["function"]["name"], "args": args, "signature": None})
+    usage = response.get("usage") or {}
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+    finish = choices[0].get("finish_reason") or ""
+    return {
+        "text": message.get("content") or "",
+        "tool_calls": tool_calls,
+        "text_signature": message.get("reasoning_content") or None,
+        "finish": {"stop": "STOP", "length": "MAX_TOKENS"}.get(finish, finish.upper()),
+        "usage": {
+            "input": usage.get("prompt_tokens", 0),
+            "output": usage.get("completion_tokens", 0) - reasoning,
+            "thoughts": reasoning,
+            "cached": usage.get("prompt_cache_hit_tokens", 0),
+        },
+    }
 
 
 def _to_wire(messages: list) -> list:
@@ -209,9 +306,13 @@ def _post(url: str, body: dict, retries: int = 5) -> dict:
     return _request(url, json.dumps(body).encode("utf-8"), retries)
 
 
-def _request(url: str, data: bytes | None = None, retries: int = 5) -> dict:
-    """Send one API request (GET when `data` is None) under the retry policy."""
-    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key()}
+def _request(url: str, data: bytes | None = None, retries: int = 5,
+             headers: dict | None = None) -> dict:
+    """Send one API request (GET when `data` is None) under the retry policy.
+
+    `headers` defaults to Gemini's auth; other vendors pass their own.
+    """
+    headers = headers or {"Content-Type": "application/json", "x-goog-api-key": api_key()}
     last_failure = "no attempts made"
     for attempt in range(retries):
         retry_after = None

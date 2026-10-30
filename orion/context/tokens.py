@@ -25,7 +25,8 @@ MAX_THRESHOLD = 200_000        # a huge window must not mean huge per-turn cost
 
 def estimate_message(m: dict) -> int:
     """Rough tokens for one neutral message."""
-    chars = len(m.get("text") or "")
+    # DeepSeek re-reads its reasoning, which is stored in text_signature.
+    chars = len(m.get("text") or "") + len(m.get("text_signature") or "")
     if m.get("tool_calls"):
         chars += len(json.dumps(m["tool_calls"]))
     return math.ceil(chars / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD
