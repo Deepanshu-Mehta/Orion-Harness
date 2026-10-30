@@ -4,7 +4,8 @@ Concept: everything outside this module speaks a neutral message format
 (user / assistant / tool messages, ToolCalls with ids). This module
 translates that format to Gemini's wire format and back, and owns the HTTP
 call with its retry policy. Day 2 adds `web_search`, a grounded call used
-by the opt-in web tool, so the vendor stays confined to this file.
+by the opt-in web tool, so the vendor stays confined to this file. Day 3
+adds `ContextOverflow` and real model limits for the context engine.
 
 Design rules:
 - Standard library only; the API key travels in a header, never in a URL,
@@ -19,6 +20,8 @@ Design rules:
 import json
 import os
 import random
+import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -27,7 +30,17 @@ import uuid
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta/models"
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 
+FALLBACK_WINDOW = 200_000
+
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_OVERFLOW = re.compile(r"(?i)token count.*exceeds|exceeds the maximum number of tokens"
+                       r"|context.*(length|window)")
+_limits_cache = {}
+_warned_fallback = False
+
+
+class ContextOverflow(RuntimeError):
+    """The prompt was larger than the model's input limit (an HTTP 400)."""
 
 
 def api_key() -> str:
@@ -43,6 +56,38 @@ def api_key() -> str:
 def default_model() -> str:
     """Return the model name from ORION_MODEL, else DEFAULT_MODEL."""
     return os.environ.get("ORION_MODEL") or DEFAULT_MODEL
+
+
+def model_limits(model: str) -> dict:
+    """Return {"input", "output"} token limits for `model`, cached per model."""
+    if model not in _limits_cache:
+        info = _request(f"{API_ROOT}/{model}", retries=2)
+        _limits_cache[model] = {"input": info["inputTokenLimit"],
+                                "output": info["outputTokenLimit"]}
+    return _limits_cache[model]
+
+
+def context_window(model: str) -> int:
+    """Input tokens the model accepts: ORION_CONTEXT_WINDOW, else the API, else a fallback.
+
+    The fallback is deliberately modest: a wrong guess must fail small, by
+    compacting early, not large, by overflowing.
+    """
+    global _warned_fallback
+    override = os.environ.get("ORION_CONTEXT_WINDOW")
+    if override:
+        try:
+            return int(override)
+        except ValueError:
+            raise ValueError(f"ORION_CONTEXT_WINDOW must be a whole number, got {override!r}") from None
+    try:
+        return model_limits(model)["input"]
+    except (RuntimeError, KeyError, ValueError) as e:
+        if not _warned_fallback:
+            _warned_fallback = True
+            print(f"warning: could not read limits for {model} ({e}); "
+                  f"assuming a {FALLBACK_WINDOW}-token window", file=sys.stderr)
+        return FALLBACK_WINDOW
 
 
 def complete(model: str, system: str, messages: list, tools: list) -> dict:
@@ -161,19 +206,25 @@ def _parse(response: dict) -> dict:
 
 def _post(url: str, body: dict, retries: int = 5) -> dict:
     """POST JSON to `url`, retrying rate limits, server errors and network faults."""
-    data = json.dumps(body).encode("utf-8")
+    return _request(url, json.dumps(body).encode("utf-8"), retries)
+
+
+def _request(url: str, data: bytes | None = None, retries: int = 5) -> dict:
+    """Send one API request (GET when `data` is None) under the retry policy."""
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key()}
     last_failure = "no attempts made"
     for attempt in range(retries):
         retry_after = None
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            method = "GET" if data is None else "POST"
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
             with urllib.request.urlopen(req, timeout=600) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code not in _RETRYABLE_STATUS:
-                detail = e.read().decode("utf-8", "replace")[:400]
-                raise RuntimeError(f"HTTP {e.code} from model API: {detail}") from e
+                detail = e.read().decode("utf-8", "replace")
+                kind = ContextOverflow if e.code == 400 and _OVERFLOW.search(detail) else RuntimeError
+                raise kind(f"HTTP {e.code} from model API: {detail[:400]}") from e
             last_failure = f"HTTP {e.code}"
             retry_after = e.headers.get("Retry-After")
         except (urllib.error.URLError, TimeoutError) as e:
