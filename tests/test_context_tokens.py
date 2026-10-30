@@ -83,6 +83,14 @@ class ProviderLimitTests(unittest.TestCase):
                 provider._post("https://x.test/", {})
         self.assertNotIsInstance(ctx.exception, provider.ContextOverflow)
 
+    def test_final_failure_names_the_reason(self):
+        body = '{"error":{"message":"exceeded its monthly spending cap"}}'
+        errors = [http_error(429, body) for _ in range(5)]
+        with mock.patch("urllib.request.urlopen", side_effect=errors), mock.patch("time.sleep"):
+            with self.assertRaises(RuntimeError) as ctx:
+                provider._post("https://x.test/", {})
+        self.assertIn("spending cap", str(ctx.exception))
+
     def test_limits_cached_and_shared_get(self):
         class Resp(io.BytesIO):
             def __enter__(self):

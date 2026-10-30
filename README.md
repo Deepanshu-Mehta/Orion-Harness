@@ -1,6 +1,6 @@
 # Orion-Harness
 
-Orion is a minimal coding-agent harness written in pure Python (standard library only, Python 3.10+), built in five layers: the loop, tools, context, durability, and orchestration. Day 1 provides the model client (`orion/provider.py`, the only file that knows the vendor) and the agent loop (`orion/loop.py`). Day 2 adds hands and limits: environments that decide where tools run (`orion/env/`), typed tools (`orion/tools/`), and a permission gate (`orion/security/`). Run the offline tests with `python3 -m unittest discover -s tests -v` (no API key or network needed; Docker and SSH tests are skipped unless enabled with `ORION_TEST_DOCKER=1` or `ORION_TEST_SSH=host:/abs/path`).
+Orion is a minimal coding-agent harness written in pure Python (standard library only, Python 3.10+), built in five layers: the loop, tools, context, durability, and orchestration. Day 1 provides the model client (`orion/provider.py`, the only file that knows the vendor) and the agent loop (`orion/loop.py`). Day 2 adds hands and limits: environments that decide where tools run (`orion/env/`), typed tools (`orion/tools/`), and a permission gate (`orion/security/`). Day 3 fits long tasks in a finite window: an assembled system prompt (`orion/prompt.py`), memory and skills (`orion/memory.py`, `orion/skills.py`), and a context engine that prunes and summarizes the tape (`orion/context/`). Run the offline tests with `python3 -m unittest discover -s tests -v` (no API key or network needed; Docker and SSH tests are skipped unless enabled with `ORION_TEST_DOCKER=1` or `ORION_TEST_SSH=host:/abs/path`).
 
 ## Demos
 
@@ -23,9 +23,17 @@ python3 demos/day2_build.py --env local --mode read-only --workdir . "Explain wh
 # Web tools are opt-in
 python3 demos/day2_build.py --env sandbox --mode auto --headless --web \
   "What is the latest stable Python version? Cite the source."
+
+# Day 3: compaction on a small task; --compact-headroom N compacts at overhead + N tokens
+python3 demos/day3_context.py --env sandbox --mode auto --headless --compact-headroom 2500 --show-summary \
+  "Create five files one.txt through five.txt, then MANIFEST.md listing each file's line count"
 ```
 
 `--env` accepts `local`, `sandbox`, `docker`, `docker:<image>`, or `ssh:<host>:<abs_root>`. `--mode` accepts `read-only`, `ask`, `accept-edits`, or `auto` (alias `yolo`). Without `--workdir`, each run gets a fresh directory under `./scratch/`.
+
+## Context model
+
+The system prompt is assembled once, ordered stable to volatile, and checked against the window before any model call. Project instructions come from `AGENTS.md` or `CLAUDE.md`, skills from `.orion/skills/<name>/SKILL.md`, and memory from `.orion/memory.md`. When the tape grows too large, old tool output is pruned first, and only then is the middle summarized. Orion relies on Gemini's implicit prefix caching rather than explicit caches. See [docs/context.md](docs/context.md).
 
 ## Security model
 

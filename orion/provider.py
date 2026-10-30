@@ -225,7 +225,7 @@ def _request(url: str, data: bytes | None = None, retries: int = 5) -> dict:
                 detail = e.read().decode("utf-8", "replace")
                 kind = ContextOverflow if e.code == 400 and _OVERFLOW.search(detail) else RuntimeError
                 raise kind(f"HTTP {e.code} from model API: {detail[:400]}") from e
-            last_failure = f"HTTP {e.code}"
+            last_failure = f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
             retry_after = e.headers.get("Retry-After")
         except (urllib.error.URLError, TimeoutError) as e:
             last_failure = f"{type(e).__name__}: {e}"
