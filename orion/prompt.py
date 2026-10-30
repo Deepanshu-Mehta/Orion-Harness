@@ -42,6 +42,11 @@ Rules:
 - When the task is complete, reply with a short summary of what you did and how you
   verified it, and stop calling tools."""
 
+# Without this, models re-read the file and verify it ("Inspect before you assume"),
+# spending turns on an answer they already hold.
+PROJECT_LEAD = ("The project instructions below are already loaded and authoritative. Do not "
+                "re-read these files, and when they answer a question, answer directly "
+                "without tools.")
 CONTEXT_FILE_NAMES = ("AGENTS.md", "CLAUDE.md")
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TOTAL_MAX_CHARS = 60_000
@@ -156,7 +161,7 @@ def _render_files(files: list, limit: int | None = None) -> str:
         text = _truncate(os.path.basename(f.path), f.text, limit) if limit else f.text
         blocks.append(f'<project_instructions path="{f.path}">\n'
                       f"{_escape_close(text, 'project_instructions')}\n</project_instructions>")
-    return "\n\n".join(blocks)
+    return "\n\n".join([PROJECT_LEAD] + blocks) if blocks else ""
 
 
 def build_system_prompt(env, gate, today=None) -> PromptParts:

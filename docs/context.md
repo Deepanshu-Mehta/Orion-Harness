@@ -60,7 +60,9 @@ The caching work is keeping the prefix stable:
   neither runs before the threshold.
 
 The per-turn line in `demos/day3_context.py` prints the cached share, which
-shows whether this is working.
+shows whether this is working. DeepSeek caches prefixes the same way, on by
+default: a 14-turn live run with no compaction served 90% of its input tokens
+from cache, and runs with compaction served 79%.
 
 ## Compared with pi and Hermes
 
@@ -110,3 +112,10 @@ enough it raises `ContextBudgetError` before any model call.
   compacted tapes, but the API's exact rules for trimmed history are not
   published.
 - **Prune discards detail.** A cleared output must be re-run if needed again.
+- **DeepSeek's reasoning is re-read but not in the anchor.** It is stored in
+  `text_signature` and echoed each turn, as the API requires when tools are in
+  use. The anchor counts it as thoughts, so the meter runs one reply low until
+  the next real usage arrives.
+- **Tiny thresholds can stay over.** If the prompt, the summary and the tail do
+  not fit under the threshold, the breaker pauses compaction. This shows up in
+  demos with a small `--compact-headroom`, not at real window sizes.

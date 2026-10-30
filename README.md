@@ -4,7 +4,7 @@ Orion is a minimal coding-agent harness written in pure Python (standard library
 
 ## Demos
 
-Set `ORION_API_KEY` or `GEMINI_API_KEY` (and optionally `ORION_MODEL`) first.
+Set `ORION_API_KEY` or `GEMINI_API_KEY` (and optionally `ORION_MODEL`) first. To use DeepSeek instead, set `DEEPSEEK_API_KEY` and `ORION_MODEL=deepseek-v4-pro` (or `deepseek-flash`); `ORION_COMPACT_MODEL` picks a separate, cheaper model for summaries. `web_search` always uses Gemini.
 
 ```sh
 # Day 1: one tool, one loop
